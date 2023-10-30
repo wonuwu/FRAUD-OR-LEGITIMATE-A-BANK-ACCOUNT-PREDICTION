@@ -1,0 +1,955 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+#libraries
+```{r}
+library(plyr)
+library(pacman)
+pacman::p_load(dplyr, caret, rsample, Hmisc, ggplot2, statip, ltm)
+library(GGally)
+library(pander)
+library(funModeling)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(ranger)       
+library(vip)
+library(utils)
+library(stringr)
+library(mlr)
+library(gridExtra)
+library(tidyverse)
+library(data.table)
+library(caTools)
+library(randomForest)
+library(Matrix)
+library(magrittr)
+library(Metrics)
+library(cluster)    # clustering algorithms
+library(factoextra) # clustering algorithms & visualization
+library(Rcpp)
+library(Rmixmod)
+```
+
+#retrieving data set
+```{r}
+# setwd sets the working directory for this exercise
+setwd("~/final")
+# Code used to import the breast cancer dataset (in csv file) to a dataframe 
+fraud <- read.csv("Fraud.csv", stringsAsFactors=TRUE)
+View(fraud)
+```
+
+
+```{r}
+# Checking the properties of the data set (variable name, variable type, number of variables)
+str(fraud)
+names(fraud)
+# Checking the number of variables and entries in the dataset
+dim(fraud)
+```
+
+```{r}
+fraud <- fraud %>% dplyr::select(-nameOrig, -nameDest, -isFlaggedFraud) 
+fraud
+```
+
+
+#Conversion of variables
+```{r}
+# Converting type to factor variable
+fraud$type <- as.factor(fraud$type)
+fraud$type
+
+# Converting isFraud to factor variable
+fraud$isFraud <- as.factor(fraud$isFraud)
+fraud$isFraud
+
+# Recoding values for isFraud 
+fraud$isFraud <- fraud$isFraud %>% recode("0"="No", "1"="Yes")
+fraud$isFraud
+
+```
+
+#INITIAL INFORMATION OF THE DATA
+```{r}
+# Initial descriptive statistics of the data
+describe(fraud)
+summary(fraud)
+
+char_vars <- fraud %>% select_if(is.character) %>% names()
+char_vars
+
+num_vars <- fraud %>% select_if(is.numeric) %>% names()
+num_vars
+
+for (charvar in char_vars){
+  fraud[,charvar] <- factor(fraud[,charvar])
+}
+str(fraud)
+```
+
+#DETECTION AND HANDLING QUALITY ISSUES
+```{r}
+forig <- fraud
+forig
+fcleaned <-fraud
+fcleaned
+```
+
+```{r}
+# Checking for missing values
+anyNA(fraud)
+
+# Shows the number of missing values in each column
+sapply(fraud, function(x) sum(is.na(x)))
+```
+
+```{r}
+# Checking the values of the numerical variables in the dataset and looking for points which do not conform to the structure of the data 
+for (numcol in num_vars){
+  # Descriptive Statistics
+  print(numcol)
+  print(summary(fraud[,numcol]))
+}
+# Checking the values of the categorical variables in the dataset and looking for points which do not conform to the structure of the data
+for (categcol in char_vars){
+  # Descriptive Statistics
+  print(categcol)
+  print(unique(fraud[,categcol]))
+}
+```
+
+#outliers
+```{r}
+# Generating boxplots 
+par(mfrow=c(3,3))
+for (numcol in num_vars){
+  # Boxplot of the data
+  print(boxplot(fraud[,numcol], main=paste("Boxplot of ", numcol), horizontal=TRUE))
+}
+```
+
+```{r}
+# Identifying the outliers in each variable
+n_outliers <- sapply(fraud[,num_vars], function(x) length(boxplot.stats(x)$out)) # no of. outliers
+n_outliers
+
+percent_outlier <-sapply(fraud[,num_vars], function(x) length(boxplot.stats(x)$out)/nrow(fraud)*100)
+percent_outlier
+
+outliers <- sapply(fraud[,num_vars], function(x) boxplot.stats(x)$out) # outlier values
+outliers
+
+# selecting the variables which have outliers
+var_with_outliers <- n_outliers[n_outliers !=0] %>% names()
+var_with_outliers
+
+# Find upper and lower boundaries of the data set that won't be considered an outlier
+find_boundaries <- function(data){
+  qnt <- quantile(data, probs=c(.25, .75), na.rm=T)
+  H <- 1.5* IQR(data)
+  lb = qnt[1]-H
+  ub = qnt[2]+H
+  
+  return (c(lb, ub))
+}
+
+```
+
+#OUTLIER TREATMENT
+```{r}
+# Treating outliers in step
+step_b <- find_boundaries(fraud$step) # Calculating the +- 1.5*IQR values
+step_b
+step_lb = step_b[1] # - 1.5*IQR
+step_ub = step_b[2] # + 1.5*IQR
+# Capping methods
+fcleaned$step[fraud$step < step_lb] <- step_lb # capping too small values in step using -1.5*IQR
+fcleaned$step[fraud$step > step_ub] <- step_ub # capping too large values in step using +1.5*IQR
+boxplot.stats(fcleaned$step) # checking if outliers in step were treated
+```
+
+```{r}
+# Treating outliers in Amount
+amount_b <- find_boundaries(fraud$amount) # Calculating the +- 1.5*IQR values
+amount_lb = amount_b[1] # - 1.5*IQR
+amount_ub = amount_b[2] # + 1.5*IQR
+# Capping methods
+fcleaned$amount[fraud$amount < amount_lb] <- amount_lb # capping too small values in Amount using -1.5*IQR
+fcleaned$amount[fraud$amount > amount_ub] <- amount_ub # capping too large values in Amount using +1.5*IQR
+boxplot.stats(fcleaned$amount) # checking if outliers in Amount were treated
+```
+
+```{r}
+# Treating outliers in oldbalanceOrg
+oldbalanceOrg_b <- find_boundaries(fraud$oldbalanceOrg) # Calculating the +- 1.5*IQR values
+oldbalanceOrg_b
+oldbalanceOrg_lb = oldbalanceOrg_b[1] # - 1.5*IQR
+oldbalanceOrg_ub = oldbalanceOrg_b[2] # + 1.5*IQR
+# Capping methods
+fcleaned$oldbalanceOrg[fraud$oldbalanceOrg < oldbalanceOrg_lb] <- oldbalanceOrg_lb # capping too small values in oldbalanceOrg using -1.5*IQR
+fcleaned$oldbalanceOrg[fraud$oldbalanceOrg> oldbalanceOrg_ub] <- oldbalanceOrg_ub # capping too large values in oldbalanceOrg using +1.5*IQR
+boxplot.stats(fcleaned$oldbalanceOrg) # checking if outliers in oldbalanceOrg were treated
+```
+
+```{r}
+# Treating outliers in newbalanceOrig
+newbalanceOrig_b <- find_boundaries(fraud$newbalanceOrig) # Calculating the +- 1.5*IQR values
+newbalanceOrig_b
+newbalanceOrig_lb = newbalanceOrig_b[1] # - 1.5*IQR
+newbalanceOrig_ub = newbalanceOrig_b[2] # + 1.5*IQR
+# Capping methods
+fcleaned$newbalanceOrig[fraud$newbalanceOrig < newbalanceOrig_lb] <- newbalanceOrig_lb # capping too small values in newbalanceOrig using -1.5*IQR
+fcleaned$newbalanceOrig[fraud$newbalanceOrig > newbalanceOrig_ub] <- newbalanceOrig_ub # capping too large values in newbalanceOrig using +1.5*IQR
+boxplot.stats(fcleaned$newbalanceOrig) # checking if outliers in newbalanceOrig were treated
+```
+
+```{r}
+# Treating outliers in oldbalanceDest
+oldbalanceDest_b <- find_boundaries(fraud$oldbalanceDest) # Calculating the +- 1.5*IQR values
+oldbalanceDest_b
+oldbalanceDest_lb = oldbalanceDest_b[1] # - 1.5*IQR
+oldbalanceDest_ub = oldbalanceDest_b[2] # + 1.5*IQR
+# Capping methods
+fcleaned$oldbalanceDest[fraud$oldbalanceDest < oldbalanceDest_lb] <- oldbalanceDest_lb # capping too small values in oldbalanceDest using -1.5*IQR
+fcleaned$oldbalanceDest[fraud$oldbalanceDest > oldbalanceDest_ub] <- oldbalanceDest_ub # capping too large values in oldbalanceDest using +1.5*IQR
+boxplot.stats(fcleaned$oldbalanceDest) # checking if outliers in oldbalanceDest were treated
+
+# Treating outliers in newbalanceDest
+newbalanceDest_b <- find_boundaries(fraud$newbalanceDest) # Calculating the +- 1.5*IQR values
+newbalanceDest_b
+newbalanceDest_lb = newbalanceDest_b[1] # - 1.5*IQR
+newbalanceDest_ub = newbalanceDest_b[2] # + 1.5*IQR
+# Capping methods
+fcleaned$newbalanceDest[fraud$newbalanceDest < newbalanceDest_lb] <- newbalanceDest_lb # capping too small values in newbalanceDest using -1.5*IQR
+fcleaned$newbalanceDest[fraud$newbalanceDest > newbalanceDest_ub] <- newbalanceDest_ub # capping too large values in newbalanceDest using +1.5*IQR
+boxplot.stats(fcleaned$newbalanceDest) # checking if outliers in newbalanceDest were treated
+```
+
+
+```{r}
+# Generate boxplot of the treated data
+par(mfrow=c(3,3))
+for (numcol in num_vars){
+  # Boxplot of the data
+  print(boxplot(fcleaned[,numcol], main=paste("Boxplot of Treated", numcol), horizontal=TRUE))
+}
+```
+
+
+#Duplicate rows
+```{r}
+# Find the number of duplicate rows in the dataset
+sum(duplicated(fraud))
+
+# Removing duplicated rows by selecting the distinct ones
+fraud <- dplyr::distinct(fraud)
+
+dim(fraud)
+
+# >>>>>  END OF DUPLICATE ROWS <<<<<<<< #
+# Creating a new Hour variable using Step
+fraud$hour <- mod(fraud$step, 24)
+fraud$hour
+
+table(fraud$hour)
+
+str(fraud)
+
+```
+
+
+
+
+#EXPLORATORY DATA ANALYSIS
+## association analysis
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(corrplot)
+```
+
+## descriptive stats
+```{r}
+#dataframe
+transaction <- data.frame(fcleaned)
+head(transaction)
+
+# Using the isFraud variable, count the number of fraud vs not fraud transactions
+fraud_count<- transaction %>% count(isFraud)
+print(fraud_count)
+
+```
+
+###NUMBER OF FRAUDULENT TRANSACTIONS
+```{r}
+# Lets visualize this through a frequency plot
+g <- ggplot(transaction, aes(isFraud))
+# Number of cases in Fraud vs Not Fraud:
+g + geom_bar()+geom_label(stat='count',aes(   label=  paste0(  round(   ((..count..)/sum(..count..)) ,4)*100 ,  "%" ) ) )+ #add the percentage of each type as label
+    labs(x = "Fraud vs Not Fraud", y = "Frequency", title = "Frequency of Fraud", subtitle = "Labels as Percent of Total Observations")
+
+
+```
+The data set is extremely imbalanced, with only 11% of the transaction data being fraudulent. To reduce model bias, we should consider sampling methods, such as under sampling before getting into our modeling stage.
+
+
+### TRANSACTION TYPES THAT CORRESPONDS TO FRAUD
+```{r}
+ggplot(data = transaction, aes(x = type , fill = as.factor(isFraud))) + geom_bar() + labs(title = "Frequency of Transaction Type", subtitle = "Fraud vs Not Fraud", x = 'Transaction Type' , y = 'No of transactions' ) +theme_classic()
+```
+
+
+## association analysis
+
+### TRANSACTION TYPES OF FRAUDULENT CASES
+```{r}
+Fraud_trans_type <- transaction %>% group_by(type) %>% summarise(fraud_transaction = sum(isFraud))
+
+
+ggplot(data = Fraud_trans_type, aes(x = type,  y = fraud_transaction)) + geom_col(aes(fill = 'type'), show.legend = FALSE) + labs(title = 'Fraud transactions as Per type', x = 'Transcation type', y = 'No of Fraud Transactions') + geom_label(aes(label = fraud_transaction)) + theme_classic()
+```
+We can see from the plot above that Fraud Transactions only consist of CASH_OUT and TRANSFER transaction types. This will be important later, as we can simplify our analysis by only including these two elements of type.
+
+### DISTRIBUTION OF TRANSACTION AMOUNT FOR FRAUDULENT CASES
+```{r}
+ggplot(data = transaction[transaction$isFraud==1,], aes(x = amount ,  fill =amount)) + geom_histogram(bins = 30, aes(fill = 'amount')) + labs(title = 'Fraud transaction Amount distribution', y = 'No. of Fraud transacts', x = 'Amount in Dollars')
+```
+The distribution of amount for Fraud transactions is heavily right skewed. This suggests that the majority of the fraud transactions are of smaller amounts.
+
+
+###oldbalanceOrg vs oldbalanceDest
+```{r}
+p1<- ggplot(data = transaction, aes(x = factor(isFraud) ,y = log1p(oldbalanceOrg), fill = factor(isFraud))) + geom_boxplot(show.legend = FALSE) +labs(title= 'Old Balance in Sender Accounts' , x = 'isFraud', y='Balance Amount') +  theme_classic()
+
+p2 <- ggplot(data = transaction, aes(x = factor(isFraud) ,y = log1p(oldbalanceDest), fill = factor(isFraud))) + geom_boxplot(show.legend = FALSE) +labs(title= 'Old balance in Receiver Accounts' , x = 'isFraud',y='Balance Amount') +  theme_classic()
+
+grid.arrange(p1, p2, nrow = 1)
+```
+In the majority of fraud transactions, the Old balance of the Origin account (where the payments are made) is higher than rest of the origin accounts while the Old balance in Destination accounts is Lower than rest.
+
+
+###Does Fraud occur more often at a certain time of day?
+
+####Each step represents 1 hour of real world and there are total 743 steps for 30 days of data . Lets convert them into 24 hours where each day has 1 to 24 hours and the pattern repeats again
+
+```{r}
+# Convert Step to Hours in 24 hours format
+transaction$hour <- mod(transaction$step, 24)
+
+```
+
+
+```{r}
+#Plot newly formatted data
+p5<- ggplot(data = transaction, aes(x = hour)) + geom_bar(aes(fill = 'isFraud'), show.legend = FALSE) +labs(title= 'Total transactions at different Hours', y = 'No. of transactions') + theme_classic()
+
+p6<-ggplot(data = transaction[transaction$isFraud==1,], aes(x = hour)) + geom_bar(aes(fill = 'isFraud'), show.legend = FALSE) +labs(title= 'Fraud transactions at different Hours', y = 'No. of fraud transactions') + theme_classic()
+
+grid.arrange(p5, p6, ncol = 1, nrow = 2)
+
+```
+The total number of transactions happening between 0 to 9 hours are very low but this is not the case for Fraud transactions. We can be concluded that fraud transactions are very often between 12am to 9 am.
+
+
+##Important Insights to Consider
+1. The data is heavily imbalanced for each target class. We should consider sampling methods, like under sampling, to reduce model bias
+2. We can filter our transaction types to include only CASH_OUT and TRANSFER types since these are the only transaction types with fraudulent cases
+3. Fraudulent transactions tend to be of smaller amounts
+4. Fraudulent transactions tend to occur from 12am-9am
+
+# FEATURE ENGINEERING
+```{r}
+
+library(recipes)
+
+###### >>>>>>>>>>> Implementing feature engineering processes <<<<<<<<<<< #####
+
+# Function for creating feature engineering blueprint 
+
+recipe_blueprint <- function(data){
+  set.seed(2022)
+  blueprint <- recipe(Classification~., data = data) %>%
+    step_zv(all_predictors()) %>%
+    step_nzv(all_predictors()) %>%
+    step_normalize(all_numeric_predictors())
+  return(blueprint)
+}
+
+# Processes:
+# Identification of Zero and Near Zero Variance Predictors and feature scaling
+
+## Function for preparing the data using the blueprint  ####
+prep_data <- function(traindata, blueprint){
+  prepdata <- prep(blueprint, training = traindata)
+  print(prepdata)
+  return(prepdata)
+}
+
+#### Baking the data using the results from the prep_data function
+data_baker <- function(preparation, data){
+  baked_data <- bake(preparation, new_data=data)
+  View(baked_data)
+  return(baked_data)
+}
+
+###### --------------- End of Implementing feature engineering processes ----------------- #####
+
+# --------------------- Implementation of Recursive Feature Elimination Algorithm --------------- #
+
+
+rfeCtrl <- rfeControl(functions=rfFuncs, method="cv", number=5)
+
+feature_select <- function(predictors, outcome, size){
+  set.seed(2022)
+  rfe <- rfe(x=predictors, y=outcome, sizes=1:size, rfeControl=rfeCtrl)
+  print("--------------Results from Recursive Feature Selection Algorithm:----------------")
+  print(rfe)
+  print(rfe$optVariables)
+}
+```
+
+#DATA SLICING AND FEATURE ENGINEERING
+```{r}
+# selection of indeces for training set
+library(tibble)
+library(caTools)
+library(caret)
+
+set.seed(1234)
+indexes = createDataPartition(fraud$isFraud, p=.8, list = F)
+indexes
+
+training_set_generator <- function(dataset){
+  print("-----------Training Set:-----------")
+  trainset <- dataset[indexes,] #trainset
+  View(trainset)
+  print("-----------Training Set Dimension:---------")
+  print(dim(trainset))
+  return(trainset)
+}
+
+train_origdata <- training_set_generator(forig)
+train_origdata
+train_cleaneddata <- training_set_generator(fcleaned)
+train_cleaneddata
+
+#sets the test set to be used in the evaluation of the trained model in terms of accuracy
+
+test_set_generator <- function(dataset){
+  print("-----------Test Set:-----------")
+  testset <- dataset[-indexes,] #testset
+  View(testset)
+  print("-----------Test Set Dimension:---------")
+  print(dim(testset))
+  return(testset)
+}
+
+test_origdata <- test_set_generator(forig)
+test_origdata
+test_cleaneddata <- test_set_generator(fcleaned)
+test_cleaneddata
+
+#----------Training Controls-------------------#
+# For model training, 10-fold cross validation repeated 2 times was used
+trctrl <- trainControl(method="repeatedcv",
+                       number = 10,
+                       repeats = 2)
+```
+
+
+# downsampling imbalanced train set
+```{r}
+#Index values with 1 and 0 
+#sample the indeces
+
+Yes <- which(train_cleaneddata$isFraud == "fraud")
+No <- which(train_cleaneddata$isFraud == "nonfraud")
+length(1)
+length(0)
+
+nfraud.dsample <- sample(0,length(1))
+train_fraud.down <- train_cleaneddata[c(nfraud.dsample,1)]
+
+
+View(train_fraud.down)
+str(train_fraud.down)
+
+yfraud.usample <- sample(1,length(0), replace = TRUE)
+length(yfraud.usample)
+train_fraud.up <- train_cleaneddata[c(yfraud.usample,0)]
+
+str(train_fraud.up)
+
+train_new.df <- downSample(train_cleaneddata,train_cleaneddata$isFraud)
+str(train_new.df)
+```
+
+# downsampling imbalanced test set
+```{r}
+#Index values with 1 and 0 
+#sample the indeces
+
+Yes <- which(test_cleaneddata$isFraud == "fraud")
+No <- which(test_cleaneddata$isFraud == "nonfraud")
+length(1)
+length(0)
+
+nfraud.dsample <- sample(0,length(1))
+test_fraud.down <- test_cleaneddata[c(nfraud.dsample,1)]
+
+
+View(test_fraud.down)
+str(test_fraud.down)
+
+yfraud.usample <- sample(1,length(0), replace = TRUE)
+length(yfraud.usample)
+test_fraud.up <- test_cleaneddata[c(yfraud.usample,0)]
+
+str(test_fraud.up)
+
+test_new.df <- downSample(test_cleaneddata,test_cleaneddata$isFraud)
+str(test_new.df)
+```
+
+
+```{r}
+# Lets visualize this through a frequency plot
+g <- ggplot(train_new.df, aes(isFraud))
+
+# Number of cases in Fraud vs Not Fraud:
+g + geom_bar()+geom_label(stat='count',aes(   label=  paste0(  round(   ((..count..)/sum(..count..)) ,4)*100 ,  "%" ) ) )+ #add the percentage of each type as label
+    labs(x = "Fraud vs Not Fraud", y = "Frequency", title = "Frequency of dsampled Fraud", subtitle = "Labels as Percent of Total Observations")
+
+```
+The data is now balanced, with 50% Fraud and 50% Non Fraud transactions.
+
+```{r}
+dim(train_new.df)
+# Using the isFraud variable, count the number of fraud vs not fraud transactions
+new_fraud_count<- train_new.df %>% count(isFraud)
+print(new_fraud_count)
+
+```
+
+#--------------MODELS----------------#
+
+
+
+
+
+
+
+#----------MARS-----------#
+
+```{r}
+# Helper packages
+library(dplyr) # for data wrangling
+library(ggplot2) # for awesome plotting
+library(rsample) # for data splitting
+# Modeling packages
+library(earth) # for fitting MARS models
+library(caret) # for automating the tuning process
+# Model interpretability packages
+library(vip) # for variable importance
+library(pdp) # for variable relationships
+```
+```{r}
+table(train_new.df$isFraud)
+```
+
+
+```{r}
+data.frame(train_new.df)
+# Fit a basic MARS model
+mars1 <- earth(
+isFraud ~ .,
+data = train_new.df
+)
+# Print model summary
+print(mars1)
+summary(mars1) %>% .$coefficients %>% head(10)
+```
+
+```{r}
+plot(mars1, which = 1)
+```
+
+
+
+```{r}
+# Fit a basic MARS model
+mars2 <- earth(
+isFraud ~ .,
+data = train_new.df,
+degree = 2
+)
+# check out the first 10 coefficient terms
+summary(mars2) %>% .$coefficients %>% head(10)
+```
+
+
+# TUNING
+```{r}
+# create a tuning grid
+hyper_grid <- expand.grid(
+degree = 1:3,
+nprune = seq(2, 100, length.out = 10) %>% floor()
+)
+head(hyper_grid)
+
+```
+
+
+
+```{r}
+library(earth)
+library(caret)
+
+data(train_new.df)
+
+a1 <- earth(isFraud ~ ., 
+            data = train_new.df,
+            glm=list(family=binomial),
+            degree = 2,       
+            nprune = 5)
+
+train_new.df$isFraud <- factor(ifelse(train_new.df$isFraud == 1, "yes", "no"),
+                            levels = c("yes", "no"))
+
+a2 <- train(isFraud ~ ., 
+            data = train_new.df, 
+            method = "earth",
+            tuneGrid = data.frame(degree = 2, nprune = 5),
+            trControl = trainControl(method = "none", 
+                                     classProbs = TRUE))
+```
+
+
+
+
+
+
+
+
+
+
+
+#-------GBM---------#
+
+```{r}
+#----- GBM ------#
+#packages
+library(dplyr)
+library(gbm) # to fit gradient boosting in r
+library(h2o) # for a java-based implementation of GBM variants
+library(xgboost) # for fitting extreme gradient boosting
+library(caret)
+```
+
+
+```{r}                                      
+# run a basic GBM model
+set.seed(1234) # for reproducibility
+fraud_gbm1 <- gbm(
+formula = isFraud ~ .,
+data = train_new.df,
+distribution = "gaussian", # SSE loss function
+n.trees = 400,
+shrinkage = 0.3,
+interaction.depth = 4,
+n.minobsinnode = 1,
+cv.folds = 6
+)
+
+
+# find index for number trees with minimum CV error
+best <- which.min(fraud_gbm1$cv.error)                   
+ 
+                 
+```
+
+
+```{r}
+#get MSE and compute RMSE
+sqrt(fraud_gbm1$cv.error[best])
+
+# plot error curve
+gbm.perf(fraud_gbm1, method = "cv")
+```
+
+
+```{r}
+# create grid search
+hyper_grid <- expand.grid(
+learning_rate = c(0.3, 0.1, 0.05, 0.01, 0.005),
+RMSE = NA,
+trees = NA,
+time = NA
+)
+
+# execute grid search
+for(i in seq_len(nrow(hyper_grid))) {
+# fit gbm
+set.seed(1234) # for reproducibility
+train_time <- system.time({
+m <- gbm(
+formula = isFraud ~ .,
+data = train_new.df,
+distribution = "gaussian",
+n.trees = 500,
+shrinkage = hyper_grid$learning_rate[i],
+interaction.depth = 2,
+n.minobsinnode = 1,
+cv.folds = 6
+)
+})
+# add SSE, trees, and training time to results
+hyper_grid$MSE[i] <- mean(min(m$cv.error))
+hyper_grid$RMSE[i] <- sqrt(min(m$cv.error))
+hyper_grid$trees[i] <- which.min(m$cv.error)
+hyper_grid$time[i] <- train_time[["elapsed"]]
+}
+
+# results
+arrange(hyper_grid, MSE)
+
+```
+
+```{r}
+# search grid
+hyper_grid <- expand.grid(
+n.trees = 98,
+shrinkage = 0.3,
+interaction.depth = c(4, 6, 10),
+n.minobsinnode = c(1, 2, 4)
+)
+# create model fit function
+model_fit <- function(n.trees, shrinkage, interaction.depth,
+
+n.minobsinnode) {
+
+set.seed(1234)
+m <- gbm(
+formula = isFraud ~ .,
+data = train_new.df,
+distribution = "bernoulli",
+n.trees = n.trees,
+shrinkage = shrinkage,
+interaction.depth = interaction.depth,
+n.minobsinnode = n.minobsinnode,
+cv.folds = 6
+)
+# compute RMSE
+sqrt(min(m$cv.error))
+}
+# perform search grid with functional programming
+hyper_grid$rmse <- purrr::pmap_dbl(
+hyper_grid,
+~ model_fit(
+n.trees = ..1,
+shrinkage = ..2,
+interaction.depth = ..3,
+n.minobsinnode = ..4
+)
+)
+# results
+arrange(hyper_grid, rmse)
+
+```
+
+
+```{r, GrediantBoosting, cache=TRUE}
+system.time(
+       fraud_gbm1 <- gbm(isFraud~ .
+               , distribution = "gaussian"
+               , data = rbind(train_new.df, test_new.df)
+               , n.trees = 500
+               , interaction.depth = 3
+               , n.minobsinnode = 1
+               , shrinkage = 0.01
+               , bag.fraction = 0.5
+               , train.fraction = nrow(train_new.df) / (nrow(train_new.df) + nrow(test_new.df))
+               )
+)
+```
+
+
+Now that we have it, we shall determine the best iteration based on test data.  
+```{r}
+gbm.iter <- gbm.perf(fraud_gbm1, method = "test")
+```
+
+
+Now we shall influence this model using the gradient boosting algorithm and plot it. And also create a second prediction variable for the test data as well.  
+```{r fig.align='center'}
+model.influence <- relative.influence(fraud_gbm1, n.trees = gbm.iter, sort. = TRUE)
+plot(fraud_gbm1)
+gbm_test <- predict(fraud_gbm1, newdata = test_new.df, n.trees = gbm.iter)
+```
+
+
+
+
+```{r}
+library(pROC)
+
+GradientBoostingModel <- roc(test_new.df$isFraud, as.numeric(gbm_test),plot = FALSE)
+plot(GradientBoostingModel,main = "Comparision of different Machine Learning Algorithms", col=3)
+lines(GradientBoostingModel, col=6)
+legend(x="bottomright", 
+       legend = c("Logistic Regression Model", 
+                  "Desicion Tree Model", "Artificial Neural Network Model", 
+                  "Gradient Boosting Model"), 
+       fill = 3:6)
+```
+
+```{r}
+predict(fraud_gbm1, test_new.df)
+
+# Prediction:
+gbm.pred <- predict(fraud_gbm1, test_new.df)
+
+#' Confusion Matrix
+confusionMatrix(as.factor(as.numeric(gbm.pred)),
+                as.factor(as.numeric(test_new.df$isFraud)))
+```
+
+
+
+#---------GBM--------#
+```{r}
+library(caret) # Machine Learning Library
+library(xgboost) # XGBoost library
+library(mltools)
+library(data.table)
+library(ggplot2)
+```
+
+```{r}
+col_names <- c("step",
+               "type",
+               "amount",
+               "oldbalanceOrg",
+               "newbalanceOrig",
+               "oldbalanceDest",
+               "newbalanceDest",
+               "isFraud",
+               "Class")
+```
+
+
+```{r}
+col_names <- colnames(test_new.df)
+# Summary of data (checking if any NA)
+summary(test_new.df)
+summary(train_new.df)
+```
+
+```{r}
+# One hot encoding independent features
+lab <- train_new.df[,8]
+dummy <- dummyVars(" ~ .", data=train_new.df[,-8])
+newdata <- data.frame(predict(dummy, newdata = train_new.df[,-8])) 
+data_train <- cbind(newdata, lab)
+
+
+```
+
+```{r}
+# Doing the same thing for test...
+test_new.df$step <- as.numeric(test_new.df$step)
+lab_test <- test_new.df[,8]
+dummy <- dummyVars(" ~ .", data=test_new.df[,-8])
+newdata <- data.frame(predict(dummy, newdata = test_new.df[,-1])) 
+data_test <- cbind(newdata, lab_test)
+colnames(test_new.df)[8] <- "isFraud"
+test_new.df$step <- as.factor(test_new.df$step)
+```
+
+```{r}
+# Doing XGBoost for classification purposes.
+grid_tune <- expand.grid(
+  nrounds = c(300,400,500), #number of trees
+  max_depth = c(2,4,6),
+  eta = 0.3, #c(0.025,0.05,0.1,0.3), #Learning rate
+  gamma = 0, # pruning --> Should be tuned. i.e c(0, 0.05, 0.1, 0.5, 0.7, 0.9, 1.0)
+  colsample_bytree = 1, # c(0.4, 0.6, 0.8, 1.0) subsample ratio of columns for tree
+  min_child_weight = 1, # c(1,2,3) # the larger, the more conservative the model
+  #is; can be used as a stop
+  subsample = 1 # c(0.5, 0.75, 1.0) # used to prevent overfitting by sampling X% training
+)
+```
+
+```{r}
+train_control <- trainControl(method = "cv",
+                              number=3,
+                              verboseIter = TRUE,
+                              allowParallel = TRUE)
+xgb_tune <- train(x = train_new.df[,-8],
+                  y = train_new.df[,8],
+                  trControl = train_control,
+                  tuneGrid = grid_tune,
+                  method= "xgbTree",
+                  verbose = TRUE)
+xgb_tune
+```
+
+```{r}
+# Best tune
+xgb_tune$bestTune
+
+# Writing out the best model.
+
+train_control <- trainControl(method = "none",
+                              verboseIter = TRUE,
+                              allowParallel = TRUE)
+final_grid <- expand.grid(nrounds = xgb_tune$bestTune$nrounds,
+                           eta = xgb_tune$bestTune$eta,
+                           max_depth = xgb_tune$bestTune$max_depth,
+                           gamma = xgb_tune$bestTune$gamma,
+                           colsample_bytree = xgb_tune$bestTune$colsample_bytree,
+                           min_child_weight = xgb_tune$bestTune$min_child_weight,
+                           subsample = xgb_tune$bestTune$subsample)
+xgb_model <- train(x = train_up_sample[,-108],
+                   y = train_up_sample[,108],
+                   trControl = train_control,
+                   tuneGrid = final_grid,
+                   method = "xgbTree",
+                   verbose = TRUE)
+```
+
+```{r}
+library(e1071)
+library(Hmisc)
+library(mlr)
+predict(xgb_model, data_test)
+
+# Prediction:
+xgb.pred <- predict(xgb_model, data_test)
+
+#' Confusion Matrix
+confusionMatrix(as.factor(as.numeric(xgb.pred)),
+                as.factor(as.numeric(data_test$Income_Bucket)))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
